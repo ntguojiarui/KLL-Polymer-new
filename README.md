@@ -1,6 +1,7 @@
-# KLL-Polymer: Near-optimal Per-key Quantile Estimation Using One KLL Sketch
+# KLL-Polymer: Near-Optimal Per-Key Streaming Quantile Estimation
 
 This repository provides source codes for **KLL-Polymer** and its variant, KLL-Polymer with deterministic compaction (**KLL-Polymer-DC** for short) for per-key quantile estimation in data streams. 
+It also provides the technical report for KLL-Polymer, which contains supplementary materials that are not contained in the main paper due to space constraints. 
 
 ## Dataset settings
 
