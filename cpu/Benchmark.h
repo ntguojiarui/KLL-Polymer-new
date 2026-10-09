@@ -35,9 +35,10 @@ public:
         // load_result = Load(PATH.c_str());
         // auto dataset_caida = (Dataset_Tuple*)load_result.start;
         // length = load_result.length / sizeof(Dataset_Tuple);
+        // assert(length >= running_length);
         // std::cout << length << "\n";
         // dataset = new Tuple [running_length];
-        // for (int i = 0; i <= running_length; ++i) {
+        // for (int i = 0; i < running_length; ++i) {
         //     std::memcpy(&(dataset[i].key), dataset_caida[i].key, 8);
         //     dataset[i].value = dataset_caida[i].value;
         // }
@@ -48,6 +49,7 @@ public:
         load_result = Load(PATH.c_str());
         auto dataset_mawi = (Dataset_Tuple*)load_result.start;
         length = load_result.length / sizeof(Dataset_Tuple);
+        assert(length >= running_length);
         std::cout << length << "\n";
         dataset = new Tuple [running_length];
         for (int i = 0; i < running_length; ++i) {
@@ -61,6 +63,7 @@ public:
         // load_result = Load(PATH.c_str());
         // dataset = (Tuple*)load_result.start;
         // length = load_result.length / sizeof(Tuple);
+        // assert(length >= running_length);
     }
 	~Benchmark() {}
     void generate_ground_truth() {
@@ -112,7 +115,7 @@ public:
     }
     void Run_KLL_Polymer(int memory) {
         // running KLL-Polymer
-        KLL_Polymer<uint64_t, uint64_t>* kll_polymer = new KLL_Polymer<uint64_t, uint64_t>(running_length, 2.0 / 3, 3, memory);
+        KLL_Polymer<uint64_t, uint64_t>* kll_polymer = new KLL_Polymer<uint64_t, uint64_t>(running_length, 2.0 / 3, 2, memory);
 
         // insertion operation
         auto start_insert = std::chrono::high_resolution_clock::now();
@@ -195,7 +198,7 @@ public:
 
     void Run_KLL_Polymer_DC(int memory) {
         // running KLL-Polymer-DC
-        KLL_Polymer_DC<uint64_t, uint64_t>* kll_polymer_dc = new KLL_Polymer_DC<uint64_t, uint64_t>(running_length, 2.0 / 3, 3, memory);
+        KLL_Polymer_DC<uint64_t, uint64_t>* kll_polymer_dc = new KLL_Polymer_DC<uint64_t, uint64_t>(running_length, 2.0 / 3, 2, memory);
 
         // insertion operation
         auto start_insert = std::chrono::high_resolution_clock::now();
@@ -533,7 +536,7 @@ public:
 
     void Run_SQUAD(int memory) {
         // running SQUAD
-        SQUAD<uint64_t, uint64_t>* squad = new SQUAD<uint64_t, uint64_t>(memory, running_length, 2.0 / 3, 3, 0.1, 1 / theta);
+        SQUAD<uint64_t, uint64_t>* squad = new SQUAD<uint64_t, uint64_t>(memory, running_length, 2.0 / 3, 2, 0.1, 1 / theta);
 
         // insertion operation
         auto start_insert = std::chrono::high_resolution_clock::now();
@@ -612,6 +615,469 @@ public:
             ofs << error_vec[i - 1] / heavy_hitters.size() << ",";
         }
         ofs << "\n";
+    }
+
+
+    void Run_KLL_Polymer_Variants(int memory) {
+        std::cout << std::setprecision(10);
+        double are_sum = 0.0, aqe_sum = 0.0;
+        double insert_throughput_sum = 0.0;
+        double query_rank_throughput_sum = 0.0;
+        double query_quantile_throughput_sum = 0.0;
+        double weight_reduction_sum = 0.0;
+
+        // running KLL-Polymer (no opt)
+        for (int run_time = 0; run_time < 5; ++run_time) {
+            std::srand(run_time + 1);
+            KLL_Polymer_No_Opt<uint64_t, uint64_t>* kll_polymer_no_opt = new KLL_Polymer_No_Opt<uint64_t, uint64_t>(running_length, 2.0 / 3, memory);
+
+            // insertion operation
+            auto start_insert = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < running_length; ++i) {
+                kll_polymer_no_opt->insert(dataset[i].key, dataset[i].value);
+            }
+            auto end_insert = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_insert = end_insert - start_insert;
+            double insert_throughput = running_length / elapsed_insert.count() / 1e6;
+
+            // rank query, given value v, return its rank
+            double are = 0.0, aqe = 0.0;
+            std::map<uint64_t, std::vector<int>> result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<int> vec;
+                vec.resize(105);
+                result_map[key] = vec;
+            }
+
+            auto start_query_rank = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    uint64_t value = query_hh_value[key][i - 1].first;
+                    int predict_rank = kll_polymer_no_opt->query_rank(key, value);
+                    result_map[key][i - 1] = predict_rank;
+                }
+            }
+            auto end_query_rank = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_rank = end_query_rank - start_query_rank;
+            double query_rank_throughput = heavy_hitters.size() * 99 / elapsed_query_rank.count() / 1e6;
+
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double error = fabs(result_map[key][i - 1] - query_hh_value[key][i - 1].second);
+                    are += error;   
+                }
+            }
+            are =  are / heavy_hitters.size() / 99;
+
+            // quantile query, given quantile w, return value with w-quantile
+            std::map<uint64_t, std::vector<uint64_t>> quantile_result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<uint64_t> vec;
+                vec.resize(105);
+                quantile_result_map[key] = vec;
+            }
+
+            auto start_query_quantile = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    uint64_t predict_value = kll_polymer_no_opt->query_value(key, w);
+                    quantile_result_map[key][i - 1] = predict_value;
+                }
+            }
+            auto end_query_quantile = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_quantile = end_query_quantile - start_query_quantile;
+            double query_quantile_throughput = heavy_hitters.size() * 99 / elapsed_query_quantile.count() / 1e6;
+            
+            std::vector<double> error_vec = {};
+            error_vec.resize(105);
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    double truth_quantile = correct_detector->query_quantile(key, quantile_result_map[key][i - 1]);
+                    double error = fabs(truth_quantile - w);
+                    aqe += error;
+                    error_vec[i - 1] += error;
+                }
+            }
+            aqe = aqe / heavy_hitters.size() / 99;
+            are_sum += are;
+            aqe_sum += aqe;
+            insert_throughput_sum += insert_throughput;
+            query_rank_throughput_sum += query_rank_throughput;
+            query_quantile_throughput_sum += query_quantile_throughput;
+            weight_reduction_sum += kll_polymer_no_opt->get_reduced_weight_sum();
+            delete kll_polymer_no_opt;
+        }
+        std::cout << "no opt " << memory / 1024 << " " << are_sum / 5 << " " << aqe_sum / 5 << " " << insert_throughput_sum / 5 << " " << query_rank_throughput_sum / 5 << " " << query_quantile_throughput_sum / 5 << " " << weight_reduction_sum / 5 << "\n";
+
+        are_sum = 0.0;
+        aqe_sum = 0.0;
+        insert_throughput_sum = 0.0;
+        query_rank_throughput_sum = 0.0;
+        query_quantile_throughput_sum = 0.0;
+        weight_reduction_sum = 0.0;
+
+        // running KLL-Polymer (opt 1)
+        for (int run_time = 0; run_time < 5; ++run_time) {
+            std::srand(run_time + 1);
+            KLL_Polymer_Opt1<uint64_t, uint64_t>* kll_polymer_opt1 = new KLL_Polymer_Opt1<uint64_t, uint64_t>(running_length, 2.0 / 3, memory);
+
+            // insertion operation
+            auto start_insert = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < running_length; ++i) {
+                kll_polymer_opt1->insert(dataset[i].key, dataset[i].value);
+            }
+            auto end_insert = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_insert = end_insert - start_insert;
+            double insert_throughput = running_length / elapsed_insert.count() / 1e6;
+
+            // rank query, given value v, return its rank
+            double are = 0.0, aqe = 0.0;
+            std::map<uint64_t, std::vector<int>> result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<int> vec;
+                vec.resize(105);
+                result_map[key] = vec;
+            }
+
+            auto start_query_rank = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    uint64_t value = query_hh_value[key][i - 1].first;
+                    int predict_rank = kll_polymer_opt1->query_rank(key, value);
+                    result_map[key][i - 1] = predict_rank;
+                }
+            }
+            auto end_query_rank = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_rank = end_query_rank - start_query_rank;
+            double query_rank_throughput = heavy_hitters.size() * 99 / elapsed_query_rank.count() / 1e6;
+
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double error = fabs(result_map[key][i - 1] - query_hh_value[key][i - 1].second);
+                    are += error;   
+                }
+            }
+            are =  are / heavy_hitters.size() / 99;
+
+            // quantile query, given quantile w, return value with w-quantile
+            std::map<uint64_t, std::vector<uint64_t>> quantile_result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<uint64_t> vec;
+                vec.resize(105);
+                quantile_result_map[key] = vec;
+            }
+
+            auto start_query_quantile = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    uint64_t predict_value = kll_polymer_opt1->query_value(key, w);
+                    quantile_result_map[key][i - 1] = predict_value;
+                }
+            }
+            auto end_query_quantile = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_quantile = end_query_quantile - start_query_quantile;
+            double query_quantile_throughput = heavy_hitters.size() * 99 / elapsed_query_quantile.count() / 1e6;
+            
+            std::vector<double> error_vec = {};
+            error_vec.resize(105);
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    double truth_quantile = correct_detector->query_quantile(key, quantile_result_map[key][i - 1]);
+                    double error = fabs(truth_quantile - w);
+                    aqe += error;
+                    error_vec[i - 1] += error;
+                }
+            }
+            aqe = aqe / heavy_hitters.size() / 99;
+            are_sum += are;
+            aqe_sum += aqe;
+            insert_throughput_sum += insert_throughput;
+            query_rank_throughput_sum += query_rank_throughput;
+            query_quantile_throughput_sum += query_quantile_throughput;
+            weight_reduction_sum += kll_polymer_opt1->get_reduced_weight_sum();
+            delete kll_polymer_opt1;
+        }
+        std::cout << "opt 1 " << memory / 1024 << " " << are_sum / 5 << " " << aqe_sum / 5 << " " << insert_throughput_sum / 5 << " " << query_rank_throughput_sum / 5 << " " << query_quantile_throughput_sum / 5 << " " << weight_reduction_sum / 5 << "\n";
+
+        are_sum = 0.0;
+        aqe_sum = 0.0;
+        insert_throughput_sum = 0.0;
+        query_rank_throughput_sum = 0.0;
+        query_quantile_throughput_sum = 0.0;
+        weight_reduction_sum = 0.0;
+
+        // running KLL-Polymer (opt 2)
+        for (int run_time = 0; run_time < 5; ++run_time) {
+            std::srand(run_time + 1);
+            KLL_Polymer<uint64_t, uint64_t>* kll_polymer = new KLL_Polymer<uint64_t, uint64_t>(running_length, 2.0 / 3, 2, memory);
+
+            // insertion operation
+            auto start_insert = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < running_length; ++i) {
+                kll_polymer->insert(dataset[i].key, dataset[i].value);
+            }
+            auto end_insert = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_insert = end_insert - start_insert;
+            double insert_throughput = running_length / elapsed_insert.count() / 1e6;
+
+            // rank query, given value v, return its rank
+            double are = 0.0, aqe = 0.0;
+            std::map<uint64_t, std::vector<int>> result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<int> vec;
+                vec.resize(105);
+                result_map[key] = vec;
+            }
+
+            auto start_query_rank = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    uint64_t value = query_hh_value[key][i - 1].first;
+                    int predict_rank = kll_polymer->query_rank(key, value);
+                    result_map[key][i - 1] = predict_rank;
+                }
+            }
+            auto end_query_rank = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_rank = end_query_rank - start_query_rank;
+            double query_rank_throughput = heavy_hitters.size() * 99 / elapsed_query_rank.count() / 1e6;
+
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double error = fabs(result_map[key][i - 1] - query_hh_value[key][i - 1].second);
+                    are += error;   
+                }
+            }
+            are =  are / heavy_hitters.size() / 99;
+
+            // quantile query, given quantile w, return value with w-quantile
+            std::map<uint64_t, std::vector<uint64_t>> quantile_result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<uint64_t> vec;
+                vec.resize(105);
+                quantile_result_map[key] = vec;
+            }
+
+            auto start_query_quantile = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    uint64_t predict_value = kll_polymer->query_value(key, w);
+                    quantile_result_map[key][i - 1] = predict_value;
+                }
+            }
+            auto end_query_quantile = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_quantile = end_query_quantile - start_query_quantile;
+            double query_quantile_throughput = heavy_hitters.size() * 99 / elapsed_query_quantile.count() / 1e6;
+            
+            std::vector<double> error_vec = {};
+            error_vec.resize(105);
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    double truth_quantile = correct_detector->query_quantile(key, quantile_result_map[key][i - 1]);
+                    double error = fabs(truth_quantile - w);
+                    aqe += error;
+                    error_vec[i - 1] += error;
+                }
+            }
+            aqe = aqe / heavy_hitters.size() / 99;
+            are_sum += are;
+            aqe_sum += aqe;
+            insert_throughput_sum += insert_throughput;
+            query_rank_throughput_sum += query_rank_throughput;
+            query_quantile_throughput_sum += query_quantile_throughput;
+            weight_reduction_sum += kll_polymer->get_reduced_weight_sum();
+            delete kll_polymer;
+        }
+        std::cout << "opt 2 " << memory / 1024 << " " << are_sum / 5 << " " << aqe_sum / 5 << " " << insert_throughput_sum / 5 << " " << query_rank_throughput_sum / 5 << " " << query_quantile_throughput_sum / 5 << " " << weight_reduction_sum / 5 << "\n";
+
+        are_sum = 0.0;
+        aqe_sum = 0.0;
+        insert_throughput_sum = 0.0;
+        query_rank_throughput_sum = 0.0;
+        query_quantile_throughput_sum = 0.0;
+        weight_reduction_sum = 0.0;
+
+        // running KLL-Polymer (opt 3)
+        for (int run_time = 0; run_time < 5; ++run_time) {
+            std::srand(run_time + 1);
+            KLL_Polymer_Opt3<uint64_t, uint64_t>* kll_polymer_opt3 = new KLL_Polymer_Opt3<uint64_t, uint64_t>(running_length, 2.0 / 3, 2, memory, theta);
+
+            // insertion operation
+            auto start_insert = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < running_length; ++i) {
+                kll_polymer_opt3->insert(dataset[i].key, dataset[i].value);
+            }
+            auto end_insert = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_insert = end_insert - start_insert;
+            double insert_throughput = running_length / elapsed_insert.count() / 1e6;
+
+            // rank query, given value v, return its rank
+            double are = 0.0, aqe = 0.0;
+            std::map<uint64_t, std::vector<int>> result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<int> vec;
+                vec.resize(105);
+                result_map[key] = vec;
+            }
+
+            auto start_query_rank = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    uint64_t value = query_hh_value[key][i - 1].first;
+                    int predict_rank = kll_polymer_opt3->query_rank(key, value);
+                    result_map[key][i - 1] = predict_rank;
+                }
+            }
+            auto end_query_rank = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_rank = end_query_rank - start_query_rank;
+            double query_rank_throughput = heavy_hitters.size() * 99 / elapsed_query_rank.count() / 1e6;
+
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double error = fabs(result_map[key][i - 1] - query_hh_value[key][i - 1].second);
+                    are += error;   
+                }
+            }
+            are =  are / heavy_hitters.size() / 99;
+
+            // quantile query, given quantile w, return value with w-quantile
+            std::map<uint64_t, std::vector<uint64_t>> quantile_result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<uint64_t> vec;
+                vec.resize(105);
+                quantile_result_map[key] = vec;
+            }
+
+            auto start_query_quantile = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    uint64_t predict_value = kll_polymer_opt3->query_value(key, w);
+                    quantile_result_map[key][i - 1] = predict_value;
+                }
+            }
+            auto end_query_quantile = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_quantile = end_query_quantile - start_query_quantile;
+            double query_quantile_throughput = heavy_hitters.size() * 99 / elapsed_query_quantile.count() / 1e6;
+            
+            std::vector<double> error_vec = {};
+            error_vec.resize(105);
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    double truth_quantile = correct_detector->query_quantile(key, quantile_result_map[key][i - 1]);
+                    double error = fabs(truth_quantile - w);
+                    aqe += error;
+                    error_vec[i - 1] += error;
+                }
+            }
+            aqe = aqe / heavy_hitters.size() / 99;
+            are_sum += are;
+            aqe_sum += aqe;
+            insert_throughput_sum += insert_throughput;
+            query_rank_throughput_sum += query_rank_throughput;
+            query_quantile_throughput_sum += query_quantile_throughput;
+            weight_reduction_sum += kll_polymer_opt3->get_reduced_weight_sum();
+            delete kll_polymer_opt3;
+        }
+        std::cout << "opt 3 " << memory / 1024 << " " << are_sum / 5 << " " << aqe_sum / 5 << " " << insert_throughput_sum / 5 << " " << query_rank_throughput_sum / 5 << " " << query_quantile_throughput_sum / 5 << " " << weight_reduction_sum / 5 << "\n";
+
+        are_sum = 0.0;
+        aqe_sum = 0.0;
+        insert_throughput_sum = 0.0;
+        query_rank_throughput_sum = 0.0;
+        query_quantile_throughput_sum = 0.0;
+        weight_reduction_sum = 0.0;
+
+        // running KLL-Polymer (dc)
+        for (int run_time = 0; run_time < 5; ++run_time) {
+            std::srand(run_time + 1);
+            KLL_Polymer_DC<uint64_t, uint64_t>* kll_polymer_dc = new KLL_Polymer_DC<uint64_t, uint64_t>(running_length, 2.0 / 3, 2, memory);
+
+            // insertion operation
+            auto start_insert = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < running_length; ++i) {
+                kll_polymer_dc->insert(dataset[i].key, dataset[i].value);
+            }
+            auto end_insert = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_insert = end_insert - start_insert;
+            double insert_throughput = running_length / elapsed_insert.count() / 1e6;
+
+            // rank query, given value v, return its rank
+            double are = 0.0, aqe = 0.0;
+            std::map<uint64_t, std::vector<int>> result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<int> vec;
+                vec.resize(105);
+                result_map[key] = vec;
+            }
+
+            auto start_query_rank = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    uint64_t value = query_hh_value[key][i - 1].first;
+                    int predict_rank = kll_polymer_dc->query_rank(key, value);
+                    result_map[key][i - 1] = predict_rank;
+                }
+            }
+            auto end_query_rank = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_rank = end_query_rank - start_query_rank;
+            double query_rank_throughput = heavy_hitters.size() * 99 / elapsed_query_rank.count() / 1e6;
+
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double error = fabs(result_map[key][i - 1] - query_hh_value[key][i - 1].second);
+                    are += error;   
+                }
+            }
+            are =  are / heavy_hitters.size() / 99;
+
+            // quantile query, given quantile w, return value with w-quantile
+            std::map<uint64_t, std::vector<uint64_t>> quantile_result_map;
+            for (auto key : heavy_hitters) {
+                std::vector<uint64_t> vec;
+                vec.resize(105);
+                quantile_result_map[key] = vec;
+            }
+
+            auto start_query_quantile = std::chrono::high_resolution_clock::now();
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    uint64_t predict_value = kll_polymer_dc->query_value(key, w);
+                    quantile_result_map[key][i - 1] = predict_value;
+                }
+            }
+            auto end_query_quantile = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_query_quantile = end_query_quantile - start_query_quantile;
+            double query_quantile_throughput = heavy_hitters.size() * 99 / elapsed_query_quantile.count() / 1e6;
+            
+            std::vector<double> error_vec = {};
+            error_vec.resize(105);
+            for (auto key : heavy_hitters) {
+                for (int i = 1; i < 100; ++i) {
+                    double w = i / 100.0;
+                    double truth_quantile = correct_detector->query_quantile(key, quantile_result_map[key][i - 1]);
+                    double error = fabs(truth_quantile - w);
+                    aqe += error;
+                    error_vec[i - 1] += error;
+                }
+            }
+            aqe = aqe / heavy_hitters.size() / 99;
+            are_sum += are;
+            aqe_sum += aqe;
+            insert_throughput_sum += insert_throughput;
+            query_rank_throughput_sum += query_rank_throughput;
+            query_quantile_throughput_sum += query_quantile_throughput;
+            weight_reduction_sum += kll_polymer_dc->get_reduced_weight_sum();
+            delete kll_polymer_dc;
+        }
+        std::cout << "dc " << memory / 1024 << " " << are_sum / 5 << " " << aqe_sum / 5 << " " << insert_throughput_sum / 5 << " " << query_rank_throughput_sum / 5 << " " << query_quantile_throughput_sum / 5 << " " << weight_reduction_sum / 5 << "\n";
     }
 
 private:

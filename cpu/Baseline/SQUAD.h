@@ -29,7 +29,7 @@ public:
             DATA_TYPE v = std::get<1>(item);
             int ts = std::get<2>(item);
             if (key == k && ts < timestamp) {
-                result.push_back(k);
+                result.push_back(v);
             }
         }
         return result;
